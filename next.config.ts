@@ -2,7 +2,7 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
     reactCompiler: true,
-    serverExternalPackages: ["canvas"],
+    serverExternalPackages: ["canvas", "pdfjs-dist"],
     images: {
         remotePatterns: [
             {

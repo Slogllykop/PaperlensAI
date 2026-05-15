@@ -69,7 +69,7 @@ export async function searchPapers(params: { query: string; limit?: number }) {
     });
 
     if (error) throw new Error(`Failed to search papers: ${error.message}`);
-    return data as any[];
+    return data as Record<string, unknown>[];
 }
 
 export async function saveAnalysisResult(params: {

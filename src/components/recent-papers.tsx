@@ -139,7 +139,9 @@ export function RecentPapers() {
                     </p>
                 </div>
             ) : (
-                <div className={`flex flex-col gap-2 transition-opacity duration-300 ${isLoading ? "opacity-50" : "opacity-100"}`}>
+                <div
+                    className={`flex flex-col gap-2 transition-opacity duration-300 ${isLoading ? "opacity-50" : "opacity-100"}`}
+                >
                     <AnimatePresence>
                         {papers.map((paper, index) => (
                             <motion.div

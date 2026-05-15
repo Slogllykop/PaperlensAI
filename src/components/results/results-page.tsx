@@ -52,11 +52,11 @@ export function ResultsPage({ paperId }: ResultsPageProps) {
     const { paper, analysis } = data;
 
     const handleExport = () => {
-        const sanitizedTitle = analysis.summary.title
-            .replace(/[^a-zA-Z0-9\s]/g, "")
-            .replace(/\s+/g, "-")
-            .slice(0, 50);
-        exportPdf("export-target", `PaperLens-${sanitizedTitle}`);
+        exportPdf(
+            analysis,
+            paper.title ?? "Untitled Paper",
+            "mindmap-container",
+        );
     };
 
     return (
@@ -107,7 +107,9 @@ export function ResultsPage({ paperId }: ResultsPageProps) {
                 />
 
                 {/* E. Mind Map */}
-                <MindMapView mindMap={analysis.mind_map} />
+                <div id="mindmap-container">
+                    <MindMapView mindMap={analysis.mind_map} />
+                </div>
 
                 {/* F. Learning Cards */}
                 <LearningCards cards={analysis.learning_cards} />

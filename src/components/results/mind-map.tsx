@@ -14,6 +14,7 @@ import {
     ReactFlowProvider,
     useEdgesState,
     useNodesState,
+    useReactFlow,
 } from "@xyflow/react";
 import { motion } from "motion/react";
 import { useTheme } from "next-themes";
@@ -185,6 +186,7 @@ interface MindMapViewProps {
 
 function MindMapInner({ mindMap }: MindMapViewProps) {
     const { theme } = useTheme();
+    const reactFlowInstance = useReactFlow();
     const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
 
     const handleToggle = useCallback((nodeId: string) => {
@@ -211,6 +213,17 @@ function MindMapInner({ mindMap }: MindMapViewProps) {
         setNodes(newNodes);
         setEdges(newEdges);
     }, [mindMap.root, collapsedIds, handleToggle, setNodes, setEdges]);
+
+    // Listen for the export hook to request fitView before capture
+    useEffect(() => {
+        const handleFitView = () => {
+            reactFlowInstance.fitView({ padding: 0.3 });
+        };
+        window.addEventListener("paperlens:fitview", handleFitView);
+        return () => {
+            window.removeEventListener("paperlens:fitview", handleFitView);
+        };
+    }, [reactFlowInstance]);
 
     return (
         <div className="h-[420px] w-full overflow-hidden rounded-xl border border-border/50">
