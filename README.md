@@ -7,28 +7,45 @@ PaperLens AI is a high-performance web application designed to help students, re
 ```mermaid
 sequenceDiagram
     participant C as Client (Browser)
-    participant A as Next.js API
-    participant R as Upstash Redis
+    participant A as Next.js API (/analyze)
+    participant R as Upstash Redis (Cache & Status)
+    participant Q as Upstash QStash
+    participant W as Next.js API (/process)
     participant G as Groq AI
     participant S as Supabase DB
 
     C->>A: 1. POST /analyze (Text/URL/PDF)
-    A->>S: 2. RPC Call (create_paper)
-    A->>R: 3. Set Status (pending)
-    A-->>G: 4. Trigger Async Execution
-    A-->>C: 5. Return 200 OK (paperId)
+    A->>R: 2. Check Content Cache (Deduplication)
+    
+    alt Cache Hit
+        R-->>A: Cached paperId
+        A-->>C: Return 200 OK (Cached paperId)
+    else Cache Miss
+        A->>S: 3. RPC Call (create_paper)
+        A->>R: 4. Set Status (pending) & Cache Hash
+        A->>Q: 5. Queue Job via QStash
+        A-->>C: 6. Return 200 OK (paperId)
+    end
     
     loop Every 2 seconds
-        C->>A: 6. GET /status
-        A->>R: 7. Read Status
+        C->>A: 7. GET /status
+        A->>R: 8. Read Status
         R-->>A: Status Data
         A-->>C: Return Status
     end
 
-    Note over G,R: Background Process
-    G->>R: 8. Update Status (processing steps)
-    G->>S: 9. RPC Call (save_analysis)
-    G->>R: 10. Update Status (completed)
+    Note over Q,S: Background Processing (QStash Webhook)
+    Q->>W: 9. POST /process (Webhook)
+    W->>G: 10. Call Groq AI (Llama 3)
+    
+    loop During Analysis
+        W->>R: 11. Update Status (reading, mindmap, etc.)
+    end
+    
+    G-->>W: Structured JSON Response
+    W->>S: 12. RPC Call (save_analysis)
+    W->>R: 13. Update Status (completed) & Cache Result
+    W-->>Q: 14. Return 200 OK (Job done)
 ```
 
 ### Explanation of Each Layer
@@ -109,9 +126,9 @@ paperlensai/
 └── package.json
 ```
 
-## Step-by-Step Local Setup
+## Step-by-Step Local Setup (Frontend, Node.js API, Python Service, PostgreSQL)
 
-Note: This project consolidates the frontend and API into a single Next.js application. There is no separate Python service.
+*Note: This project consolidates the frontend and Node.js API into a single Next.js application using App Router API Routes. There is no separate Python service required for this architecture.*
 
 1.  **Clone and Install**
     Clone the repository and install dependencies using pnpm.
@@ -120,8 +137,9 @@ Note: This project consolidates the frontend and API into a single Next.js appli
 2.  **Supabase Setup (PostgreSQL)**
     Create a new Supabase project. Go to the SQL Editor and execute all the SQL files located in `supabase/migrations/` in sequential order (00 through 03). This will set up your tables, triggers, and RPC functions.
 
-3.  **Upstash Setup (Redis)**
+3.  **Upstash Setup (Redis & QStash)**
     Create a new Redis database in the Upstash console. Copy your REST URL and REST Token.
+    Also, grab your QStash Token and URL from the Upstash console for background processing.
 
 4.  **Groq Setup**
     Create an account on Groq and generate a new API key.
@@ -142,7 +160,10 @@ Note: This project consolidates the frontend and API into a single Next.js appli
 *   `SUPABASE_SERVICE_ROLE_KEY`: A highly privileged secret key used by the Next.js server to bypass RLS when performing trusted administrative inserts (like saving the AI results). NEVER expose this to the browser.
 *   `UPSTASH_REDIS_REST_URL`: The connection endpoint for your Upstash Redis instance.
 *   `UPSTASH_REDIS_REST_TOKEN`: The authentication token allowing the server to read and write to Redis via HTTP.
+*   `QSTASH_URL`: The Upstash QStash REST URL.
+*   `QSTASH_TOKEN`: The Upstash QStash authentication token.
 *   `GROQ_API_KEY`: Your secret key to access the Llama 3 models on Groq's high speed inference network.
+*   `APP_URL`: Your deployed application URL (required for QStash webhooks to resolve).
 
 ## API Endpoints
 
@@ -162,23 +183,41 @@ Note: This project consolidates the frontend and API into a single Next.js appli
   "success": true,
   "data": {
     "paperId": "uuid-string-here",
-    "status": "pending"
+    "status": "pending",
+    "cached": false
   }
 }
 ```
 
-### 2. Check Status
+### 2. Process Analysis (QStash Webhook)
+**POST** `/api/v1/papers/process`
+**Request:**
+```json
+{
+  "paperId": "uuid-string-here",
+  "paperText": "Raw paper text...",
+  "contentHash": "sha256-hash"
+}
+```
+**Response:**
+```json
+{
+  "success": true
+}
+```
+
+### 3. Check Status
 **GET** `/api/v1/papers/[id]/status`
 **Request:** No body required.
 **Response:**
 ```json
 {
-  "status": "pending",
-  "current_step": "Analyzing core concepts"
+  "status": "processing",
+  "current_step": "finding_ideas"
 }
 ```
 
-### 3. Get Results
+### 4. Get Results
 **GET** `/api/v1/papers/[id]`
 **Request:** No body required.
 **Response:**
@@ -192,10 +231,8 @@ Note: This project consolidates the frontend and API into a single Next.js appli
   "analysis": {
     "summary": {
       "title": "Attention Is All You Need",
-      "category": "Machine Learning",
-      ...
-    },
-    ...
+      "category": "Machine Learning"
+    }
   }
 }
 ```
@@ -271,6 +308,8 @@ RULES:
 - related_topics: provide 5-7 topics with valid Google Scholar URLs (https://scholar.google.com/scholar?q=...)
 - math_explanation: if the paper has no significant math, set has_math to false and set equation, equation_name, what_it_means, simple_explanation to null, symbols to [], step_by_step to []
 - All explanations should be beginner-friendly. Avoid jargon without explanation.
+- IMPORTANT: Wrap ANY math symbols, variables, or short equations inside text fields (what_it_means, simple_explanation, step_by_step, meaning) with $ signs for inline formatting (e.g., "The factor $gamma$").
+- The input text may contain Unicode superscripts (e.g. x², n⁺¹) and subscripts (e.g. x₁, aₙ) extracted from PDF rendering. Interpret these as mathematical notation and convert them to proper LaTeX in your output (e.g. x² → x^2, x₁ → x_1).
 - Mind map node IDs must be unique strings (e.g. "root", "1", "1-1", "1-2", "2", "2-1")
 
 Analyze the following research paper content and provide a structured explanation:
@@ -284,7 +323,9 @@ Respond with ONLY valid JSON matching the schema described in your instructions.
 
 ## How Async Processing Works
 
-When a user submits a paper, the `/api/v1/papers/analyze` route receives the request. Instead of waiting for the AI to finish, the route inserts a new "pending" record into Postgres, writes an initial "received" status to Redis, and triggers the `analyzePaper` function as a background promise without `await`ing it. The route immediately responds to the client with a 200 OK and the generated `paperId`. The background promise continues running on the server, communicating with Groq, updating Redis with its current step, and finally saving the completed JSON directly to Postgres via a server side RPC call.
+When a user submits a paper, the `/api/v1/papers/analyze` route receives the request. Instead of waiting for the AI to finish, the route inserts a new "pending" record into Postgres, writes an initial "received" status to Redis, and securely queues a webhook job using **Upstash QStash**. The route immediately responds to the client with a 200 OK and the generated `paperId`. 
+
+QStash then asynchronously POSTs to the `/api/v1/papers/process` webhook route on the server. This route continues running, communicating with Groq, updating Redis with its current processing step (so the frontend sees progress), and finally saving the completed JSON directly to Postgres via a server-side RPC call.
 
 ## How the Frontend Detects Completion
 
@@ -294,15 +335,15 @@ The frontend utilizes a custom React hook called `usePaperStatus`. When the user
 
 *   **Context Window Limits**: We currently truncate the raw paper text to roughly 12000 to 15000 characters before sending it to the LLM to avoid token limits and reduce inference time. Very long papers might lose nuance from their later sections.
 *   **Math Rendering**: The mathematical equations are currently displayed in raw LaTeX text. They are not rendered into proper graphical math notation (like KaTeX or MathJax would provide).
-*   **PDF Parsing Complexities**: Complex multi column PDFs or those with heavily stylized mathematical formulas can result in messy extracted text, slightly degrading the quality of the AI's analysis.
+*   **PDF Parsing Complexities**: Complex multi-column PDFs or those with heavily stylized mathematical formulas can result in messy extracted text, slightly degrading the quality of the AI's analysis.
 
 ## What I Would Improve With More Time
 
-*   Implement proper KaTeX/MathJax rendering for the math breakdown section.
+*   Implement proper KaTeX/MathJax rendering for the math breakdown section (partially implemented, could be expanded to all text fields).
 *   Introduce vector database chunking (RAG) to allow the AI to read the entire paper rather than truncating it.
 *   Add a conversational "Chat with this Paper" feature utilizing the saved context.
 *   Support authentication so users can save a history of their analyzed papers to their account.
 
 ## Deployment Links
 
-(Not currently deployed. Intended for Vercel deployment with Supabase and Upstash integrations).
+Live application: **[https://in-paperlensai.vercel.app](https://in-paperlensai.vercel.app)**
